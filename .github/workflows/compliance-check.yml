@@ -11,6 +11,8 @@ jobs:
   compliance:
     runs-on: ubuntu-latest
     name: Check OWASP Compliance
+    permissions:
+      contents: read
     
     steps:
     - name: Checkout code
