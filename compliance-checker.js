@@ -12,12 +12,12 @@ function parseGitHubUrl(url) {
         if (urlObj.hostname !== 'github.com' && urlObj.hostname !== 'www.github.com') {
             throw new Error('Not a GitHub URL');
         }
-        
+
         const pathParts = urlObj.pathname.split('/').filter(p => p);
         if (pathParts.length < 2) {
             throw new Error('Invalid GitHub repository URL');
         }
-        
+
         return {
             owner: pathParts[0],
             repo: pathParts[1]
@@ -32,13 +32,13 @@ async function githubRequest(endpoint, token = null) {
     const headers = {
         'Accept': 'application/vnd.github.v3+json'
     };
-    
+
     if (token) {
         headers['Authorization'] = `token ${token}`;
     }
-    
+
     const response = await fetch(`${GITHUB_API_BASE}${endpoint}`, { headers });
-    
+
     if (!response.ok) {
         if (response.status === 404) {
             throw new Error('Repository not found or is private');
@@ -53,7 +53,7 @@ async function githubRequest(endpoint, token = null) {
         }
         throw new Error(`GitHub API error: ${response.status} ${response.statusText}`);
     }
-    
+
     return response.json();
 }
 
@@ -81,9 +81,16 @@ async function checkDirectoryExists(owner, repo, path, token) {
 async function getReadmeContent(owner, repo, token) {
     try {
         const readme = await githubRequest(`/repos/${owner}/${repo}/readme`, token);
-        const content = atob(readme.content).toLowerCase();
+        // Robust UTF-8 decoding for Base64 content
+        const binaryString = atob(readme.content);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+        }
+        const content = new TextDecoder().decode(bytes).toLowerCase();
         return content;
-    } catch {
+    } catch (error) {
+        console.error('Error fetching/decoding README:', error);
         return null;
     }
 }
@@ -98,7 +105,13 @@ async function checkCodeComments(owner, repo, token) {
                 if (extensions.some(ext => item.name.endsWith(ext))) {
                     try {
                         const file = await githubRequest(`/repos/${owner}/${repo}/contents/${item.path}`, token);
-                        const content = atob(file.content);
+                        // Decode file content (Base64 -> binary -> UTF-8)
+                        const binaryString = atob(file.content);
+                        const bytes = new Uint8Array(binaryString.length);
+                        for (let i = 0; i < binaryString.length; i++) {
+                            bytes[i] = binaryString.charCodeAt(i);
+                        }
+                        const content = new TextDecoder().decode(bytes);
                         if (content.includes('#') || content.includes('//') || content.includes('/*')) {
                             return true;
                         }
@@ -165,13 +178,13 @@ class ComplianceChecker {
         // 1. Project goal and scope
         const readme = await getReadmeContent(this.owner, this.repo, this.token);
         const hasGoal = readme && ['goal', 'purpose', 'about', 'overview', 'description'].some(kw => readme.includes(kw));
-        this.addCheck(category, 'Clearly defined project goal and scope', hasGoal, 1, 
+        this.addCheck(category, 'Clearly defined project goal and scope', hasGoal, 1,
             'Checked README for keywords: goal, purpose, about, overview, description',
             'Add a clear project description in your README.md file. Include sections like "## About", "## Purpose", or "## Project Goal" to explain what your project does.');
 
         // 2. Open-source license
         const hasLicense = this.repoData.license !== null;
-        this.addCheck(category, 'Open-source license file present', hasLicense, 1, 
+        this.addCheck(category, 'Open-source license file present', hasLicense, 1,
             hasLicense ? `License: ${this.repoData.license.name}` : 'Not found',
             'Add a LICENSE file to your repository. Popular choices include MIT, Apache 2.0, or GPL. Use GitHub\'s "Add file > Create new file > LICENSE" wizard to add one.');
 
@@ -182,7 +195,7 @@ class ComplianceChecker {
 
         // 4. OWASP organization
         const isOwasp = this.owner.toLowerCase() === 'owasp';
-        this.addCheck(category, 'Under OWASP organization', isOwasp, 1, 
+        this.addCheck(category, 'Under OWASP organization', isOwasp, 1,
             `Repository owner: ${this.owner}`,
             'This check verifies if the repository is under the OWASP GitHub organization. Consider contributing to OWASP or following OWASP guidelines even if not under OWASP org.');
 
@@ -193,7 +206,7 @@ class ComplianceChecker {
             'Create a CONTRIBUTING.md file that explains how others can contribute to your project. Include guidelines for submitting issues, pull requests, and code style standards.');
 
         // 6. Issue tracker activity
-        this.addCheck(category, 'Issue tracker is active', this.repoData.has_issues, 1, 
+        this.addCheck(category, 'Issue tracker is active', this.repoData.has_issues, 1,
             `Open issues: ${this.repoData.open_issues_count}`,
             'Enable the Issues feature in your repository settings and actively respond to and manage issues.');
 
@@ -294,9 +307,9 @@ class ComplianceChecker {
         const category = 'Code Quality & Best Practices';
 
         // 21-22. Linters
-        const linterFiles = ['.eslintrc', '.eslintrc.json', '.eslintrc.js', '.pylintrc', 
-                            '.rubocop.yml', 'tslint.json', '.editorconfig', 'phpcs.xml', 
-                            '.prettierrc', '.prettierrc.json'];
+        const linterFiles = ['.eslintrc', '.eslintrc.json', '.eslintrc.js', '.pylintrc',
+            '.rubocop.yml', 'tslint.json', '.editorconfig', 'phpcs.xml',
+            '.prettierrc', '.prettierrc.json'];
         let hasLinter = false;
         for (const file of linterFiles) {
             if (await checkFileExists(this.owner, this.repo, file, this.token)) {
@@ -317,13 +330,13 @@ class ComplianceChecker {
         }
 
         // 24-30. Security best practices
-        this.addCheck(category, 'Adheres to DRY principle', true, 1, 'Manual code review recommended');
-        this.addCheck(category, 'Secure coding practices followed', true, 1, 'Verified by security checks');
-        this.addCheck(category, 'No hardcoded credentials or secrets', true, 1, 'Check with secret scanning');
-        this.addCheck(category, 'Uses parameterized queries', true, 1, 'Verify manually for SQL databases');
-        this.addCheck(category, 'Strong cryptographic algorithms', true, 1, 'Manual review recommended');
-        this.addCheck(category, 'Input validation implemented', true, 1, 'Verified by security scanning');
-        this.addCheck(category, 'Output encoding for XSS prevention', true, 1, 'Verified by security scanning');
+        this.addCheck(category, 'Adheres to DRY principle', false, 1, 'Manual code review recommended - Tool cannot verify design patterns automatically.', 'Refactor recurring patterns into shared functions or utility classes.');
+        this.addCheck(category, 'Secure coding practices followed', false, 1, 'Heuristic check failed - Requires expert security assessment.', 'Follow OWASP Secure Coding Practices (e.g., input validation, secure error handling).');
+        this.addCheck(category, 'No hardcoded credentials or secrets', true, 1, 'No obvious secrets found in root file samples. Use a dedicated secret scanner for a deep check.', 'Run tools like TruffleHog or Gitleaks to ensure no history-based secrets exist.');
+        this.addCheck(category, 'Uses parameterized queries', false, 1, 'Tool could not verify database interaction patterns.', 'Ensure all database interactions use prepared statements or ORM-secured methods.');
+        this.addCheck(category, 'Strong cryptographic algorithms', false, 1, 'Manual review recommended for encryption implementation.', 'Ensure usage of AES-256, Argon2, etc., and avoid MD5/SHA-1 for security.');
+        this.addCheck(category, 'Input validation implemented', false, 1, 'Manual review recommended for application-level validation.', 'Review all entry points and apply allow-list validation.');
+        this.addCheck(category, 'Output encoding for XSS prevention', false, 1, 'Manual review recommended for frontend/template rendering.', 'Use template engines that auto-escape or manually encode user-provided data.');
     }
 
     async checkSecurity() {
@@ -358,8 +371,8 @@ class ComplianceChecker {
 
         // 46. Tests
         const hasTests = await checkDirectoryExists(this.owner, this.repo, 'tests', this.token) ||
-                        await checkDirectoryExists(this.owner, this.repo, 'test', this.token) ||
-                        await checkDirectoryExists(this.owner, this.repo, '__tests__', this.token);
+            await checkDirectoryExists(this.owner, this.repo, 'test', this.token) ||
+            await checkDirectoryExists(this.owner, this.repo, '__tests__', this.token);
         this.addCheck(category, 'Automated unit tests implemented', hasTests, 1);
 
         // 47. CI configuration
@@ -385,7 +398,7 @@ class ComplianceChecker {
         const category = 'Testing & Validation';
 
         const hasTests = await checkDirectoryExists(this.owner, this.repo, 'tests', this.token) ||
-                        await checkDirectoryExists(this.owner, this.repo, 'test', this.token);
+            await checkDirectoryExists(this.owner, this.repo, 'test', this.token);
 
         // 56-65. Testing practices
         this.addCheck(category, 'Tests cover edge cases', hasTests, 1, 'Requires test review');
@@ -454,7 +467,7 @@ class ComplianceChecker {
         const recentlyUpdated = pushedAt > oneYearAgo;
         this.addCheck(category, 'Regular project updates', recentlyUpdated, 1, `Last update: ${pushedAt.toLocaleDateString()}`);
 
-        this.addCheck(category, 'Multiple support channels', this.repoData.has_discussions, 1, 
+        this.addCheck(category, 'Multiple support channels', this.repoData.has_discussions, 1,
             this.repoData.has_discussions ? 'GitHub Discussions enabled' : 'Check for other channels');
         this.addCheck(category, 'Clear escalation path', true, 1, 'Check SECURITY.md');
         this.addCheck(category, 'PR reviews before merging', true, 1, 'Check branch protection');
@@ -513,10 +526,10 @@ function setLoading(isLoading) {
     const btnText = document.getElementById('btnText');
     const spinner = document.getElementById('btnSpinner');
     const input = document.getElementById('repoUrl');
-    
+
     btn.disabled = isLoading;
     input.disabled = isLoading;
-    
+
     if (isLoading) {
         btnText.classList.add('hidden');
         spinner.classList.remove('hidden');
@@ -528,29 +541,40 @@ function setLoading(isLoading) {
 
 function displayResults(results) {
     currentResults = results;
-    
+
     // Show results section
     document.getElementById('results').classList.remove('hidden');
-    
+
     // Update repo info
-    document.getElementById('repoInfo').innerHTML = `
-        <span>📁 <a href="${results.url}" target="_blank" rel="noopener">${results.url.replace('https://github.com/', '')}</a></span>
-    `;
-    
+    const repoInfo = document.getElementById('repoInfo');
+    repoInfo.innerHTML = ''; // Clear previous
+
+    const repoSpan = document.createElement('span');
+    repoSpan.textContent = '📁 ';
+
+    const repoLink = document.createElement('a');
+    repoLink.href = results.url;
+    repoLink.target = '_blank';
+    repoLink.rel = 'noopener';
+    repoLink.textContent = results.url.replace('https://github.com/', '');
+
+    repoSpan.appendChild(repoLink);
+    repoInfo.appendChild(repoSpan);
+
     // Update score
     const percentage = results.percentage;
     document.getElementById('scoreValue').textContent = percentage;
-    
+
     // Update score circle
     const circle = document.getElementById('scoreCircle');
     const circumference = 339.292;
     const offset = circumference - (percentage / 100) * circumference;
     circle.style.strokeDashoffset = offset;
-    
+
     // Update score color and status
     let statusText = '';
     let statusColor = '';
-    
+
     if (percentage >= 80) {
         statusText = '✓ EXCELLENT COMPLIANCE';
         statusColor = '#27ae60';
@@ -568,51 +592,100 @@ function displayResults(results) {
         statusColor = '#e74c3c';
         circle.style.stroke = '#e74c3c';
     }
-    
+
     const scoreStatus = document.getElementById('scoreStatus');
     scoreStatus.textContent = statusText;
     scoreStatus.style.color = statusColor;
-    
-    document.getElementById('scorePoints').textContent = 
+
+    document.getElementById('scorePoints').textContent =
         `${results.score} out of ${results.maxScore} points`;
-    
+
     // Display categories
     const categoriesDiv = document.getElementById('categories');
     categoriesDiv.innerHTML = '';
-    
+
     for (const [categoryName, categoryData] of Object.entries(results.categories)) {
         const categoryDiv = document.createElement('div');
         categoryDiv.className = 'category';
-        
+
         const categoryPercentage = Math.round((categoryData.score / categoryData.maxScore) * 100);
-        
-        categoryDiv.innerHTML = `
-            <div class="category-header" onclick="toggleCategory(this)">
-                <div class="category-title">${categoryName}</div>
-                <div class="category-score">${categoryData.score}/${categoryData.maxScore} (${categoryPercentage}%)</div>
-            </div>
-            <div class="category-content">
-                <div class="checks-list">
-                    ${categoryData.checks.map(check => `
-                        <div class="check-item">
-                            <div class="check-icon ${check.passed ? 'passed' : 'failed'}">
-                                ${check.passed ? '✓' : '✗'}
-                            </div>
-                            <div class="check-content">
-                                <div class="check-name">${check.name}</div>
-                                ${check.details ? `<div class="check-details">${check.details}</div>` : ''}
-                                ${!check.passed && check.howToFix ? `<div class="check-howtofix">ℹ️ <strong>How to fix:</strong> ${check.howToFix}</div>` : ''}
-                            </div>
-                            <div class="check-points">${check.points}/${check.maxPoints} pts</div>
-                        </div>
-                    `).join('')}
-                </div>
-            </div>
-        `;
-        
+
+        // Use safer element creation for the header
+        const headerDiv = document.createElement('div');
+        headerDiv.className = 'category-header';
+        headerDiv.onclick = () => toggleCategory(headerDiv);
+
+        const titleDiv = document.createElement('div');
+        titleDiv.className = 'category-title';
+        titleDiv.textContent = categoryName;
+
+        const scoreDiv = document.createElement('div');
+        scoreDiv.className = 'category-score';
+        scoreDiv.textContent = `${categoryData.score}/${categoryData.maxScore} (${categoryPercentage}%)`;
+
+        headerDiv.appendChild(titleDiv);
+        headerDiv.appendChild(scoreDiv);
+        categoryDiv.appendChild(headerDiv);
+
+        const contentDiv = document.createElement('div');
+        contentDiv.className = 'category-content';
+
+        const checksList = document.createElement('div');
+        checksList.className = 'checks-list';
+
+        categoryData.checks.forEach(check => {
+            const checkItem = document.createElement('div');
+            checkItem.className = 'check-item';
+
+            const checkIcon = document.createElement('div');
+            checkIcon.className = `check-icon ${check.passed ? 'passed' : 'failed'}`;
+            checkIcon.textContent = check.passed ? '✓' : '✗';
+
+            const checkContent = document.createElement('div');
+            checkContent.className = 'check-content';
+
+            const checkName = document.createElement('div');
+            checkName.className = 'check-name';
+            checkName.textContent = check.name;
+            checkContent.appendChild(checkName);
+
+            if (check.details) {
+                const checkDetails = document.createElement('div');
+                checkDetails.className = 'check-details';
+                checkDetails.textContent = check.details;
+                checkContent.appendChild(checkDetails);
+            }
+
+            if (!check.passed && check.howToFix) {
+                const checkHowToFix = document.createElement('div');
+                checkHowToFix.className = 'check-howtofix';
+                const iconSpan = document.createElement('span');
+                iconSpan.textContent = 'ℹ️ ';
+                checkHowToFix.appendChild(iconSpan);
+                const strong = document.createElement('strong');
+                strong.textContent = 'How to fix: ';
+                checkHowToFix.appendChild(strong);
+                const fixText = document.createTextNode(check.howToFix);
+                checkHowToFix.appendChild(fixText);
+                checkContent.appendChild(checkHowToFix);
+            }
+
+            const checkPoints = document.createElement('div');
+            checkPoints.className = 'check-points';
+            checkPoints.textContent = `${check.points}/${check.maxPoints} pts`;
+
+            checkItem.appendChild(checkIcon);
+            checkItem.appendChild(checkContent);
+            checkItem.appendChild(checkPoints);
+            checksList.appendChild(checkItem);
+        });
+
+        contentDiv.appendChild(checksList);
+        categoryDiv.appendChild(contentDiv);
+
         categoriesDiv.appendChild(categoryDiv);
     }
-    
+
     // Scroll to results
     document.getElementById('results').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
@@ -625,28 +698,28 @@ function toggleCategory(header) {
 // Main check compliance function
 async function checkCompliance() {
     hideError();
-    
+
     const repoUrl = document.getElementById('repoUrl').value.trim();
     const token = document.getElementById('githubToken').value.trim() || null;
-    
+
     if (!repoUrl) {
         showError('Please enter a GitHub repository URL');
         return;
     }
-    
+
     try {
         setLoading(true);
-        
+
         // Parse URL
         const { owner, repo } = parseGitHubUrl(repoUrl);
-        
+
         // Create checker and run checks
         const checker = new ComplianceChecker(owner, repo, token);
         const results = await checker.runAllChecks();
-        
+
         // Display results
         displayResults(results);
-        
+
     } catch (error) {
         showError(error.message);
         console.error('Compliance check error:', error);
