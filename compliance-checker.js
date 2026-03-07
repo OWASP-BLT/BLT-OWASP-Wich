@@ -91,7 +91,7 @@ async function checkFileExistsGetUrl(owner, repo, path, token) {
 async function getFileContentAndUrl(owner, repo, path, token) {
     try {
         const file = await githubRequest(`/repos/${owner}/${repo}/contents/${path}`, token);
-        const content = atob(file.content.replace(/\n/g, ''));
+        const content = atob(file.content.replace(/\s/g, ''));
         return { content, url: file.html_url || `https://github.com/${owner}/${repo}/blob/main/${path}` };
     } catch {
         return null;
@@ -130,7 +130,7 @@ async function checkDirectoryExists(owner, repo, path, token) {
 async function getReadmeContent(owner, repo, token) {
     try {
         const readme = await githubRequest(`/repos/${owner}/${repo}/readme`, token);
-        const content = atob(readme.content.replace(/\n/g, '')).toLowerCase();
+        const content = atob(readme.content.replace(/\s/g, '')).toLowerCase();
         return content;
     } catch {
         return null;
@@ -147,7 +147,7 @@ async function getWorkflowContent(owner, repo, token) {
             if (wf.type === 'file') {
                 try {
                     const file = await githubRequest(`/repos/${owner}/${repo}/contents/${wf.path}`, token);
-                    const content = atob(file.content.replace(/\n/g, ''));
+                    const content = atob(file.content.replace(/\s/g, ''));
                     results.push({ name: wf.name, content, url: file.html_url });
                 } catch { continue; }
             }
@@ -424,21 +424,20 @@ class ComplianceChecker {
         try {
             const contents = await githubRequest(`/repos/${this.owner}/${this.repo}/contents/`, this.token);
             const extensions = ['.py', '.js', '.java', '.go', '.rs', '.ts', '.jsx', '.tsx'];
-            for (const item of contents.slice(0, 8)) {
-                if (item.type === 'file' && extensions.some(ext => item.name.endsWith(ext))) {
-                    try {
-                        const file = await githubRequest(`/repos/${this.owner}/${this.repo}/contents/${item.path}`, this.token);
-                        const content = atob(file.content.replace(/\n/g, ''));
-                        if (content.includes('#') || content.includes('//') || content.includes('/*')) {
-                            hasComments = true;
-                            commentsFileUrl = file.html_url;
-                            commentsDetails = `Found comments in <a href="${commentsFileUrl}" target="_blank" rel="noopener">${item.name}</a> (searched for: #, //, /*)`;
-                            break;
-                        }
-                    } catch { continue; }
-                }
+            const sourceFiles = contents.filter(i => i.type === 'file' && extensions.some(e => i.name.endsWith(e)));
+            for (const item of sourceFiles.slice(0, 8)) {
+                try {
+                    const file = await githubRequest(`/repos/${this.owner}/${this.repo}/contents/${item.path}`, this.token);
+                    const content = atob(file.content.replace(/\s/g, ''));
+                    if (content.includes('#') || content.includes('//') || content.includes('/*')) {
+                        hasComments = true;
+                        commentsFileUrl = file.html_url;
+                        commentsDetails = `Found comments in <a href="${commentsFileUrl}" target="_blank" rel="noopener">${item.name}</a> (searched for: #, //, /*)`;
+                        break;
+                    }
+                } catch { continue; }
             }
-            if (!hasComments) commentsDetails = `Checked ${contents.filter(i => i.type === 'file' && extensions.some(e => i.name.endsWith(e))).length} source file(s) in root — no comment markers found`;
+            if (!hasComments) commentsDetails = `Checked ${sourceFiles.length} source file(s) in root — no comment markers found`;
         } catch { /* leave defaults */ }
         this.addCheck(category, 'Inline code comments present', hasComments, 1, commentsDetails,
             'Add meaningful comments to your code to explain complex logic. Use docstrings for functions/classes and inline comments for non-obvious code.');
@@ -457,10 +456,12 @@ class ComplianceChecker {
             checkFileExistsGetUrl(this.owner, this.repo, 'TROUBLESHOOTING.md', this.token),
         ]);
         const hasFaqOrTrouble = faqResult.exists || troubleResult.exists;
+        const faqLinks = [
+            faqResult.exists ? `<a href="${faqResult.url}" target="_blank" rel="noopener">FAQ.md</a>` : null,
+            troubleResult.exists ? `<a href="${troubleResult.url}" target="_blank" rel="noopener">TROUBLESHOOTING.md</a>` : null,
+        ].filter(Boolean).join(', ');
         this.addCheck(category, 'FAQ or troubleshooting guide', hasFaqOrTrouble, 1,
-            hasFaqOrTrouble
-                ? `Found: ${faqResult.exists ? `<a href="${faqResult.url}" target="_blank" rel="noopener">FAQ.md</a>` : ''}${troubleResult.exists ? `<a href="${troubleResult.url}" target="_blank" rel="noopener">TROUBLESHOOTING.md</a>` : ''}`
-                : 'Checked for FAQ.md and TROUBLESHOOTING.md — neither found',
+            hasFaqOrTrouble ? `Found: ${faqLinks}` : 'Checked for FAQ.md and TROUBLESHOOTING.md — neither found',
             'Create a FAQ.md or TROUBLESHOOTING.md file to help users solve common problems.');
 
         // 18. Error messages — search for error/exception patterns in deps or README
@@ -618,9 +619,9 @@ class ComplianceChecker {
         const strongCryptoKw = ['bcrypt', 'argon2', 'pbkdf2', 'scrypt', 'nacl', 'libsodium', 'cryptography', 'passlib', 'pynacl'];
         const weakCryptoKw = ['md5', 'sha1', 'des', 'rc4', '3des'];
         const strongMatch = this._depsInclude(strongCryptoKw);
+        // Only flag weak crypto when found in actual dependency files (not documentation)
         const weakMatch = this._depsInclude(weakCryptoKw);
-        const weakInReadme = weakCryptoKw.some(k => this._readme && this._readme.includes(k));
-        const hasStrongCrypto = strongMatch.found && !weakMatch.found && !weakInReadme;
+        const hasStrongCrypto = strongMatch.found && !weakMatch.found;
         let cryptoDetails = '';
         if (strongMatch.found && !weakMatch.found) {
             cryptoDetails = `Strong crypto library "<strong>${strongMatch.kw}</strong>" in <a href="${strongMatch.url}" target="_blank" rel="noopener">dependency file</a>`;
@@ -777,7 +778,8 @@ class ComplianceChecker {
         let portDetails = '';
         let hasPortControl = false;
         if (dockerfileData) {
-            const exposeCount = (dockerfileData.content.match(/^EXPOSE\s+\d+/gmi) || []).length;
+            // Match EXPOSE with port numbers, optionally followed by /protocol (e.g., EXPOSE 80/tcp)
+            const exposeCount = (dockerfileData.content.match(/^EXPOSE\s+\d+(?:\/(?:tcp|udp))?/gmi) || []).length;
             hasPortControl = exposeCount <= 2;
             portDetails = `<a href="${dockerfileData.url}" target="_blank" rel="noopener">Dockerfile</a> exposes ${exposeCount} port(s) — ${exposeCount <= 2 ? 'acceptable' : 'consider reducing'}`;
         } else {
@@ -959,11 +961,23 @@ class ComplianceChecker {
         const hasTests = testDir !== null;
         const testDirLink = testDir ? `<a href="${buildDirUrl(this.owner, this.repo, testDir)}" target="_blank" rel="noopener">${testDir}/</a>` : null;
 
-        // 56. Tests cover edge cases — search for edge/boundary keywords via code search
+        // Run all code-search-based tests in parallel to reduce latency
+        const [edgeResult, mockResult, sanitizeResult, gracefulResult, regressionResult] = await Promise.all([
+            hasTests ? searchCodeInRepo(this.owner, this.repo, 'edge_case OR boundary OR invalid_input', this.token)
+                     : Promise.resolve({ total_count: 0, items: [] }),
+            hasTests ? searchCodeInRepo(this.owner, this.repo, 'mock OR stub OR MagicMock OR sinon', this.token)
+                     : Promise.resolve({ total_count: 0, items: [] }),
+            hasTests ? searchCodeInRepo(this.owner, this.repo, 'sanitize OR xss OR injection OR sql_injection OR traversal', this.token)
+                     : Promise.resolve({ total_count: 0, items: [] }),
+            searchCodeInRepo(this.owner, this.repo, 'except Exception OR catch (error) OR catch(err)', this.token),
+            hasTests ? searchCodeInRepo(this.owner, this.repo, 'regression OR test_issue OR bug_fix OR repro', this.token)
+                     : Promise.resolve({ total_count: 0, items: [] }),
+        ]);
+
+        // 56. Tests cover edge cases
         let edgeCaseDetails = '';
         let hasEdgeCases = false;
         if (hasTests) {
-            const edgeResult = await searchCodeInRepo(this.owner, this.repo, 'edge_case OR boundary OR invalid_input', this.token);
             hasEdgeCases = edgeResult.total_count > 0;
             if (hasEdgeCases) {
                 const item = edgeResult.items[0];
@@ -988,12 +1002,10 @@ class ComplianceChecker {
             `Unit tests: ${testDir ? testDirLink : 'not found'}; Integration/E2E: ${intDir ? `<a href="${buildDirUrl(this.owner, this.repo, intDir)}" target="_blank" rel="noopener">${intDir}/</a>` : 'not found'}`,
             'Implement a testing pyramid: many unit tests, some integration tests (API/DB), few E2E tests. Create separate directories: tests/unit/, tests/integration/, tests/e2e/.');
 
-        // 58. Mocks and stubs — search for mock/stub patterns in code
+        // 58. Mocks and stubs
         let mocksDetails = '';
-        let hasMocks = false;
+        const hasMocks = hasTests && mockResult.total_count > 0;
         if (hasTests) {
-            const mockResult = await searchCodeInRepo(this.owner, this.repo, 'mock OR stub OR MagicMock OR sinon', this.token);
-            hasMocks = mockResult.total_count > 0;
             if (hasMocks) {
                 const item = mockResult.items[0];
                 mocksDetails = `Found mock/stub patterns in <a href="${item.html_url}" target="_blank" rel="noopener">${item.name}</a>`;
@@ -1021,10 +1033,8 @@ class ComplianceChecker {
 
         // 60. Tests validate input sanitization
         let sanitizeDetails = '';
-        let hasSanitizeTests = false;
+        const hasSanitizeTests = hasTests && sanitizeResult.total_count > 0;
         if (hasTests) {
-            const sanitizeResult = await searchCodeInRepo(this.owner, this.repo, 'sanitize OR xss OR injection OR sql_injection OR traversal', this.token);
-            hasSanitizeTests = sanitizeResult.total_count > 0;
             if (hasSanitizeTests) {
                 const item = sanitizeResult.items[0];
                 sanitizeDetails = `Found security test patterns in <a href="${item.html_url}" target="_blank" rel="noopener">${item.name}</a>`;
@@ -1046,8 +1056,7 @@ class ComplianceChecker {
                 : `Searched dependency files for fuzz testing: ${fuzzKw.join(', ')} — none found`,
             'Add fuzz testing for critical parsing code. For Python: `pip install hypothesis` or `atheris`. For Go: use built-in `go test -fuzz=FuzzMyFunc`. For Java: use Jazzer. Target input parsers, deserialisers, and cryptographic operations.');
 
-        // 62. Graceful failure — search for error handling via code search
-        const gracefulResult = await searchCodeInRepo(this.owner, this.repo, 'except Exception OR catch (error) OR catch(err)', this.token);
+        // 62. Graceful failure — results already fetched in parallel above
         const hasGracefulFailure = gracefulResult.total_count > 0;
         let gracefulDetails = '';
         if (hasGracefulFailure) {
@@ -1077,12 +1086,10 @@ class ComplianceChecker {
                 : `Searched dependency files for DI frameworks: ${diKw.join(', ')} — none found`,
             'Implement dependency injection to improve testability: pass dependencies (DB, config, services) into constructors rather than creating them inside classes. Use a DI framework (Spring for Java, Angular DI, InversifyJS for TS/JS, dependency-injector for Python).');
 
-        // 65. Regression tests
+        // 65. Regression tests — results already fetched in parallel above
         let regressionDetails = '';
-        let hasRegression = false;
+        const hasRegression = hasTests && regressionResult.total_count > 0;
         if (hasTests) {
-            const regressionResult = await searchCodeInRepo(this.owner, this.repo, 'regression OR test_issue OR bug_fix OR repro', this.token);
-            hasRegression = regressionResult.total_count > 0;
             if (hasRegression) {
                 const item = regressionResult.items[0];
                 regressionDetails = `Found regression test patterns in <a href="${item.html_url}" target="_blank" rel="noopener">${item.name}</a>`;
@@ -1171,17 +1178,18 @@ class ComplianceChecker {
                 : `Checked for load test configs: ${loadTestCandidates.join(', ')} and load testing deps — none found`,
             'Set up load testing: use k6 (k6.io) or Locust (Python). Write scenarios simulating realistic traffic. Test before major releases. Target P95 response time under 500ms. Run load tests in CI on a schedule.');
 
-        // 73. Horizontal scaling — check for Docker/Kubernetes configs
-        const scalingCandidates = ['Dockerfile', 'docker-compose.yml', 'docker-compose.yaml', 'kubernetes', 'k8s', 'helm'];
+        // 73. Horizontal scaling — check for Docker/Kubernetes files/dirs (explicit lists, no magic indices)
+        const scalingFileCandidates = ['Dockerfile', 'docker-compose.yml', 'docker-compose.yaml'];
+        const scalingDirCandidates = ['kubernetes', 'k8s', 'helm'];
         let scalingFile = null;
-        for (const sf of scalingCandidates.slice(0, 3)) {
+        for (const sf of scalingFileCandidates) {
             const r = await checkFileExistsGetUrl(this.owner, this.repo, sf, this.token);
             if (r.exists) { scalingFile = { path: sf, url: r.url }; break; }
         }
         if (!scalingFile) {
-            for (const sf of scalingCandidates.slice(3)) {
-                if (await checkDirectoryExists(this.owner, this.repo, sf, this.token)) {
-                    scalingFile = { path: sf, url: buildDirUrl(this.owner, this.repo, sf) };
+            for (const sd of scalingDirCandidates) {
+                if (await checkDirectoryExists(this.owner, this.repo, sd, this.token)) {
+                    scalingFile = { path: sd, url: buildDirUrl(this.owner, this.repo, sd) };
                     break;
                 }
             }
@@ -1190,7 +1198,7 @@ class ComplianceChecker {
         this.addCheck(category, 'Supports horizontal scaling', hasHorizScaling, 1,
             hasHorizScaling
                 ? `Found <a href="${scalingFile.url}" target="_blank" rel="noopener">${scalingFile.path}</a> (enables containerised/horizontal scaling)`
-                : `No Dockerfile, docker-compose.yml, or Kubernetes configs found`,
+                : `Checked for: ${[...scalingFileCandidates, ...scalingDirCandidates].join(', ')} — none found`,
             'Design for horizontal scaling: containerise with Docker, use Kubernetes for orchestration, make the app stateless. Store session state in Redis rather than in-process memory. Avoid hardcoded hostnames.');
 
         // 74. Lazy loading — search deps for lazy-load patterns
@@ -1224,8 +1232,7 @@ class ComplianceChecker {
                 : `Searched dependency files for logging frameworks: ${logKw.join(', ')} — none found`,
             'Add structured logging to your application. For Python: `pip install loguru` or use stdlib logging. For Node.js: `npm install winston pino`. For Java: use SLF4J with Logback. Log all significant events, errors, and security actions.');
 
-        // 77. Configurable log levels — check deps or .env.example for LOG_LEVEL
-        const logLevelInEnv = this._gitignore && this._gitignore.content.includes('log');
+        // 77. Configurable log levels — check .env.example for LOG_LEVEL or known log-level deps
         const logLevelInDeps = this._depsInclude(['log-level', 'loglevel', 'LOG_LEVEL']);
         const envExLogResult = await checkFileExistsGetUrl(this.owner, this.repo, '.env.example', this.token);
         let envExContent = null;
@@ -1240,7 +1247,7 @@ class ComplianceChecker {
                     ? `LOG_LEVEL found in <a href="${envExContent.url}" target="_blank" rel="noopener">.env.example</a>`
                     : logLevelInDeps.found
                         ? `Log level config in <a href="${logLevelInDeps.url}" target="_blank" rel="noopener">dependency file</a>`
-                        : `Logging library "<strong>${logMatch.kw}</strong>" supports log levels`)
+                        : `Logging library "<strong>${logMatch.kw}</strong>" supports configurable log levels`)
                 : 'No LOG_LEVEL configuration or log level settings found',
             'Configure log levels via environment variables: `LOG_LEVEL=DEBUG` for development, `LOG_LEVEL=WARNING` for production. This lets you change verbosity without code deployments.');
 
