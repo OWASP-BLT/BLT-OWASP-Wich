@@ -60,6 +60,49 @@ a:hover {
     font-weight: 600;
 }
 
+.version-badge {
+    display: none;
+    align-items: center;
+    gap: 0.35rem;
+    border: 1px solid var(--neutral-border);
+    border-radius: 999px;
+    padding: 0.35rem 0.75rem;
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: #374151;
+    background: #f9fafb;
+}
+
+.version-badge.loaded {
+    display: inline-flex;
+}
+
+.version-badge a {
+    color: #374151;
+    text-decoration: none;
+}
+
+.version-badge a:hover {
+    color: var(--primary-color);
+    text-decoration: none;
+}
+
+.category-repo-link {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 0.5rem;
+    color: #9ca3af;
+    font-size: 0.85rem;
+    text-decoration: none;
+    vertical-align: middle;
+    transition: color 0.15s ease;
+}
+
+.category-repo-link:hover {
+    color: var(--primary-color);
+    text-decoration: none;
+}
+
 .subtitle {
     margin-top: 0.65rem;
     margin-bottom: 0.45rem;
