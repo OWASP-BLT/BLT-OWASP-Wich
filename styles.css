@@ -516,6 +516,26 @@ footer {
     font-size: 0.84rem;
 }
 
+.check-details a {
+    color: #dc2626;
+    text-decoration: underline;
+}
+
+.check-details a:hover {
+    color: #991b1b;
+}
+
+.check-details code,
+.check-howtofix code {
+    font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace;
+    font-size: 0.8em;
+    background: #f3f4f6;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.25rem;
+    padding: 0.1em 0.35em;
+    color: #374151;
+}
+
 .check-howtofix {
     margin-top: 0.6rem;
     border: 1px solid #fecaca;
