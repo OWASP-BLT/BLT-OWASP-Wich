@@ -5,6 +5,39 @@ let currentResults = null;
 // GitHub API configuration
 const GITHUB_API_BASE = 'https://api.github.com';
 
+// Fetch and display the OWASP-Wich app version from the latest GitHub release
+async function fetchAppVersion() {
+    try {
+        const response = await fetch(`${GITHUB_API_BASE}/repos/OWASP-BLT/BLT-OWASP-Wich/releases/latest`, {
+            headers: { 'Accept': 'application/vnd.github.v3+json' }
+        });
+        if (!response.ok) return;
+        const release = await response.json();
+        const versionEl = document.getElementById('app-version');
+        if (versionEl && release.tag_name) {
+            versionEl.innerHTML = `<i class="fa-solid fa-tag" aria-hidden="true"></i><a href="${release.html_url}" target="_blank" rel="noopener" title="View release notes">${release.tag_name}</a>`;
+            versionEl.classList.add('loaded');
+        }
+    } catch { /* silently ignore version fetch errors */ }
+}
+
+// Map a compliance category name to a relevant section URL in the checked repository
+function getCategoryRepoLink(categoryName, repoUrl) {
+    const links = {
+        'General Compliance & Governance': repoUrl,
+        'Documentation & Usability': `${repoUrl}#readme`,
+        'Code Quality & Best Practices': repoUrl,
+        'Security & OWASP Compliance': `${repoUrl}/security`,
+        'CI/CD & DevSecOps': `${repoUrl}/actions`,
+        'Testing & Validation': `${repoUrl}/actions`,
+        'Performance & Scalability': repoUrl,
+        'Logging & Monitoring': repoUrl,
+        'Community & Support': `${repoUrl}/issues`,
+        'Legal & Compliance': repoUrl,
+    };
+    return links[categoryName] || repoUrl;
+}
+
 // Simple in-memory cache to reduce API calls
 const _apiCache = new Map();
 
@@ -1582,10 +1615,16 @@ function displayResults(results) {
         categoryDiv.className = 'category';
         
         const categoryPercentage = Math.round((categoryData.score / categoryData.maxScore) * 100);
+        const categoryLink = getCategoryRepoLink(categoryName, results.url);
         
         categoryDiv.innerHTML = `
             <button type="button" class="category-header" onclick="toggleCategory(this)" aria-expanded="false">
-                <div class="category-title">${categoryName}</div>
+                <div class="category-title">
+                    ${categoryName}
+                    <a href="${categoryLink}" target="_blank" rel="noopener" class="category-repo-link" onclick="event.stopPropagation()" title="View in repository">
+                        <i class="fa-brands fa-github" aria-hidden="true"></i>
+                    </a>
+                </div>
                 <div class="inline-flex items-center gap-3">
                     <div class="category-score">${categoryData.score}/${categoryData.maxScore} (${categoryPercentage}%)</div>
                     <i class="fa-solid fa-chevron-right category-chevron" aria-hidden="true"></i>
@@ -1664,6 +1703,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const repoInput = document.getElementById('repoUrl');
     const sampleRepoBtn = document.getElementById('sampleRepoBtn');
     const sidebarLinks = document.querySelectorAll('.sidebar-link');
+
+    // Populate header version badge from latest GitHub release
+    fetchAppVersion();
 
     repoInput.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') {
