@@ -7,6 +7,19 @@ const GITHUB_API_BASE = 'https://api.github.com';
 
 // Simple in-memory cache to reduce API calls
 const _apiCache = new Map();
+const _utf8Decoder = new TextDecoder('utf-8');
+
+function decodeBase64Utf8(base64Content) {
+    const sanitized = String(base64Content || '').replace(/\s/g, '');
+    const binaryString = atob(sanitized);
+    const bytes = new Uint8Array(binaryString.length);
+
+    for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+    }
+
+    return _utf8Decoder.decode(bytes);
+}
 
 // Parse GitHub URL to extract owner and repo
 function parseGitHubUrl(url) {
@@ -91,7 +104,7 @@ async function checkFileExistsGetUrl(owner, repo, path, token) {
 async function getFileContentAndUrl(owner, repo, path, token) {
     try {
         const file = await githubRequest(`/repos/${owner}/${repo}/contents/${path}`, token);
-        const content = atob(file.content.replace(/\s/g, ''));
+        const content = decodeBase64Utf8(file.content);
         return { content, url: file.html_url || `https://github.com/${owner}/${repo}/blob/main/${path}` };
     } catch {
         return null;
@@ -130,13 +143,7 @@ async function checkDirectoryExists(owner, repo, path, token) {
 async function getReadmeContent(owner, repo, token) {
     try {
         const readme = await githubRequest(`/repos/${owner}/${repo}/readme`, token);
-        // Robust UTF-8 decoding for Base64 content
-        const binaryString = atob(readme.content.replace(/\s/g, ''));
-        const bytes = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-            bytes[i] = binaryString.charCodeAt(i);
-        }
-        const content = new TextDecoder().decode(bytes).toLowerCase();
+        const content = decodeBase64Utf8(readme.content).toLowerCase();
         return content;
     } catch (error) {
         console.error('Error fetching/decoding README:', error);
@@ -154,19 +161,14 @@ async function getWorkflowContent(owner, repo, token) {
             if (item.type === 'file' && (item.name.endsWith('.yml') || item.name.endsWith('.yaml'))) {
                 try {
                     const file = await githubRequest(`/repos/${owner}/${repo}/contents/${item.path}`, token);
-                    // Robust UTF-8 decoding for Base64 content
-                    const binaryString = atob(file.content.replace(/\s/g, ''));
-                    const bytes = new Uint8Array(binaryString.length);
-                    for (let i = 0; i < binaryString.length; i++) {
-                        bytes[i] = binaryString.charCodeAt(i);
-                    }
-                    const content = new TextDecoder().decode(bytes);
+                    const content = decodeBase64Utf8(file.content);
                     results.push({
                         name: item.name,
                         content: content,
                         url: file.html_url || `https://github.com/${owner}/${repo}/blob/main/${item.path}`
                     });
                 } catch {
+                    console.warn(`Failed to fetch workflow file: ${item.name}`);
                     continue;
                 }
             }
@@ -447,12 +449,7 @@ class ComplianceChecker {
             for (const item of sourceFiles.slice(0, 8)) {
                 try {
                     const file = await githubRequest(`/repos/${this.owner}/${this.repo}/contents/${item.path}`, this.token);
-                    const binaryString = atob(file.content.replace(/\s/g, ''));
-                    const bytes = new Uint8Array(binaryString.length);
-                    for (let i = 0; i < binaryString.length; i++) {
-                        bytes[i] = binaryString.charCodeAt(i);
-                    }
-                    const content = new TextDecoder().decode(bytes);
+                    const content = decodeBase64Utf8(file.content);
 
                     if (content.includes('#') || content.includes('//') || content.includes('/*')) {
                         hasComments = true;
@@ -1545,6 +1542,20 @@ function setLoading(isLoading) {
     }
 }
 
+function escapeHtml(value) {
+    if (value === null || value === undefined) {
+        return '';
+    }
+
+    return String(value).replace(/[&<>"']/g, char => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+    }[char]));
+}
+
 function displayResults(results) {
     currentResults = results;
 
@@ -1552,12 +1563,21 @@ function displayResults(results) {
     document.getElementById('results').classList.remove('hidden');
 
     // Update repo info
-    document.getElementById('repoInfo').innerHTML = `
-        <span class="inline-flex items-center gap-2">
-            <i class="fa-solid fa-folder-tree" aria-hidden="true"></i>
-            <a href="${results.url}" target="_blank" rel="noopener">${results.url.replace('https://github.com/', '')}</a>
-        </span>
-    `;
+    const repoInfoDiv = document.getElementById('repoInfo');
+    repoInfoDiv.innerHTML = '';
+    const span = document.createElement('span');
+    span.className = 'inline-flex items-center gap-2';
+    const icon = document.createElement('i');
+    icon.className = 'fa-solid fa-folder-tree';
+    icon.setAttribute('aria-hidden', 'true');
+    const link = document.createElement('a');
+    link.href = results.url;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.textContent = results.url.replace('https://github.com/', '');
+    span.appendChild(icon);
+    span.appendChild(link);
+    repoInfoDiv.appendChild(span);
 
     // Update score
     const percentage = results.percentage;
@@ -1607,10 +1627,11 @@ function displayResults(results) {
         categoryDiv.className = 'category';
 
         const categoryPercentage = Math.round((categoryData.score / categoryData.maxScore) * 100);
+        const safeCategoryName = escapeHtml(categoryName);
 
         categoryDiv.innerHTML = `
             <button type="button" class="category-header" onclick="toggleCategory(this)" aria-expanded="false">
-                <div class="category-title">${categoryName}</div>
+                <div class="category-title">${safeCategoryName}</div>
                 <div class="inline-flex items-center gap-3">
                     <div class="category-score">${categoryData.score}/${categoryData.maxScore} (${categoryPercentage}%)</div>
                     <i class="fa-solid fa-chevron-right category-chevron" aria-hidden="true"></i>
@@ -1618,19 +1639,25 @@ function displayResults(results) {
             </button>
             <div class="category-content">
                 <div class="checks-list">
-                    ${categoryData.checks.map(check => `
+                    ${categoryData.checks.map(check => {
+            const safeName = escapeHtml(check.name);
+            const safeDetails = escapeHtml(check.details);
+            const safeHowToFix = escapeHtml(check.howToFix);
+
+            return `
                         <div class="check-item">
                             <div class="check-icon ${check.passed ? 'passed' : 'failed'}">
                                 <i class="fa-solid ${check.passed ? 'fa-circle-check' : 'fa-circle-xmark'}" aria-hidden="true"></i>
                             </div>
                             <div class="check-content">
-                                <div class="check-name">${check.name}</div>
-                                ${check.details ? `<div class="check-details">${check.details}</div>` : ''}
-                                ${!check.passed && check.howToFix ? `<div class="check-howtofix"><i class="fa-solid fa-circle-info" aria-hidden="true"></i> <strong>How to fix:</strong> ${check.howToFix}</div>` : ''}
+                                <div class="check-name">${safeName}</div>
+                                ${safeDetails ? `<div class="check-details">${safeDetails}</div>` : ''}
+                                ${!check.passed && safeHowToFix ? `<div class="check-howtofix"><i class="fa-solid fa-circle-info" aria-hidden="true"></i> <strong>How to fix:</strong> ${safeHowToFix}</div>` : ''}
                             </div>
                             <div class="check-points">${check.points}/${check.maxPoints} pts</div>
                         </div>
-                    `).join('')}
+                    `;
+        }).join('')}
                 </div>
             </div>
         `;
