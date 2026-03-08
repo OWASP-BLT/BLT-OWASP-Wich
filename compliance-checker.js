@@ -157,8 +157,12 @@ async function getWorkflowContent(owner, repo, token) {
         const results = [];
         const workflowPath = '.github/workflows';
         const contents = await githubRequest(`/repos/${owner}/${repo}/contents/${workflowPath}`, token);
-        for (const item of contents.slice(0, 5)) {
-            if (item.type === 'file' && (item.name.endsWith('.yml') || item.name.endsWith('.yaml'))) {
+        const workflowFiles = contents
+            .filter(item => item.type === 'file' && /\.(yml|yaml)$/i.test(item.name))
+            .slice(0, 5);
+
+        for (const item of workflowFiles) {
+            {
                 try {
                     const file = await githubRequest(`/repos/${owner}/${repo}/contents/${item.path}`, token);
                     const content = decodeBase64Utf8(file.content);
@@ -454,7 +458,7 @@ class ComplianceChecker {
                     if (content.includes('#') || content.includes('//') || content.includes('/*')) {
                         hasComments = true;
                         commentsFileUrl = file.html_url;
-                        commentsDetails = `Found comments in <a href="${commentsFileUrl}" target="_blank" rel="noopener">${item.name}</a> (searched for: #, //, /*)`;
+                        commentsDetails = `Found comments in <a href="${escapeHtml(commentsFileUrl)}" target="_blank" rel="noopener">${escapeHtml(item.name)}</a> (searched for: #, //, /*)`;
                         break;
                     }
                 } catch { continue; }
@@ -834,9 +838,9 @@ class ComplianceChecker {
         const depAuditInWf = this._workflowIncludes(['npm audit', 'pip-audit', 'safety check', 'snyk test', 'bundle-audit', 'govulncheck', 'trivy']);
         const hasDepSec = snykResult.exists || depbotResult.exists || depAuditInWf.found;
         let depSecDetails = '';
-        if (snykResult.exists) depSecDetails = `Found <a href="${snykResult.url}" target="_blank" rel="noopener">.snyk</a> configuration`;
+        if (snykResult.exists) depSecDetails = `Found <a href="${escapeHtml(snykResult.url)}" target="_blank" rel="noopener">.snyk</a> configuration`;
         else if (depbotResult.exists) depSecDetails = `Dependabot configured (see check #32)`;
-        else if (depAuditInWf.found) depSecDetails = `Dependency audit command "<strong>${depAuditInWf.kw}</strong>" in <a href="${depAuditInWf.url}" target="_blank" rel="noopener">${depAuditInWf.name}</a>`;
+        else if (depAuditInWf.found) depSecDetails = `Dependency audit command "<strong>${escapeHtml(depAuditInWf.kw)}</strong>" in <a href="${escapeHtml(depAuditInWf.url)}" target="_blank" rel="noopener">${escapeHtml(depAuditInWf.name)}</a>`;
         else depSecDetails = 'No dependency security scanning found (.snyk, dependabot.yml, npm audit, pip-audit, snyk test)';
         this.addCheck(category, 'No outdated/unsafe dependencies', hasDepSec, 1, depSecDetails,
             'Enable dependency scanning: add .github/dependabot.yml, use Snyk (snyk.io), or add `npm audit --audit-level=high` / `pip-audit` to your CI pipeline. Review and update vulnerable dependencies promptly.');
@@ -1003,7 +1007,7 @@ class ComplianceChecker {
             hasEdgeCases = edgeResult.total_count > 0;
             if (hasEdgeCases) {
                 const item = edgeResult.items[0];
-                edgeCaseDetails = `Found edge case test patterns in <a href="${item.html_url}" target="_blank" rel="noopener">${item.name}</a> (searched: edge_case, boundary, invalid_input)`;
+                edgeCaseDetails = `Found edge case test patterns in <a href="${escapeHtml(item.html_url)}" target="_blank" rel="noopener">${escapeHtml(item.name)}</a> (searched: edge_case, boundary, invalid_input)`;
             } else {
                 edgeCaseDetails = `${testDirLink} exists but no edge_case/boundary test patterns found via code search`;
             }
@@ -1030,7 +1034,7 @@ class ComplianceChecker {
         if (hasTests) {
             if (hasMocks) {
                 const item = mockResult.items[0];
-                mocksDetails = `Found mock/stub patterns in <a href="${item.html_url}" target="_blank" rel="noopener">${item.name}</a>`;
+                mocksDetails = `Found mock/stub patterns in <a href="${escapeHtml(item.html_url)}" target="_blank" rel="noopener">${escapeHtml(item.name)}</a>`;
             } else {
                 mocksDetails = `${testDirLink} exists but no mock/stub patterns found (searched: mock, stub, MagicMock, sinon)`;
             }
@@ -1059,7 +1063,7 @@ class ComplianceChecker {
         if (hasTests) {
             if (hasSanitizeTests) {
                 const item = sanitizeResult.items[0];
-                sanitizeDetails = `Found security test patterns in <a href="${item.html_url}" target="_blank" rel="noopener">${item.name}</a>`;
+                sanitizeDetails = `Found security test patterns in <a href="${escapeHtml(item.html_url)}" target="_blank" rel="noopener">${escapeHtml(item.name)}</a>`;
             } else {
                 sanitizeDetails = `${testDirLink} found but no sanitize/xss/injection test patterns detected`;
             }
@@ -1083,7 +1087,7 @@ class ComplianceChecker {
         let gracefulDetails = '';
         if (hasGracefulFailure) {
             const item = gracefulResult.items[0];
-            gracefulDetails = `Found error handling patterns in <a href="${item.html_url}" target="_blank" rel="noopener">${item.name}</a>`;
+            gracefulDetails = `Found error handling patterns in <a href="${escapeHtml(item.html_url)}" target="_blank" rel="noopener">${escapeHtml(item.name)}</a>`;
         } else {
             gracefulDetails = 'No error handling patterns found via code search';
         }
@@ -1114,7 +1118,7 @@ class ComplianceChecker {
         if (hasTests) {
             if (hasRegression) {
                 const item = regressionResult.items[0];
-                regressionDetails = `Found regression test patterns in <a href="${item.html_url}" target="_blank" rel="noopener">${item.name}</a>`;
+                regressionDetails = `Found regression test patterns in <a href="${escapeHtml(item.html_url)}" target="_blank" rel="noopener">${escapeHtml(item.name)}</a>`;
             } else {
                 regressionDetails = `${testDirLink} exists — no explicit regression test patterns found`;
             }
@@ -1641,8 +1645,6 @@ function displayResults(results) {
                 <div class="checks-list">
                     ${categoryData.checks.map(check => {
             const safeName = escapeHtml(check.name);
-            const safeDetails = escapeHtml(check.details);
-            const safeHowToFix = escapeHtml(check.howToFix);
 
             return `
                         <div class="check-item">
@@ -1651,8 +1653,8 @@ function displayResults(results) {
                             </div>
                             <div class="check-content">
                                 <div class="check-name">${safeName}</div>
-                                ${safeDetails ? `<div class="check-details">${safeDetails}</div>` : ''}
-                                ${!check.passed && safeHowToFix ? `<div class="check-howtofix"><i class="fa-solid fa-circle-info" aria-hidden="true"></i> <strong>How to fix:</strong> ${safeHowToFix}</div>` : ''}
+                                ${check.details ? `<div class="check-details">${check.details}</div>` : ''}
+                                ${!check.passed && check.howToFix ? `<div class="check-howtofix"><i class="fa-solid fa-circle-info" aria-hidden="true"></i> <strong>How to fix:</strong> ${check.howToFix}</div>` : ''}
                             </div>
                             <div class="check-points">${check.points}/${check.maxPoints} pts</div>
                         </div>
