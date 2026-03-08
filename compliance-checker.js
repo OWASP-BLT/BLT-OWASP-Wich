@@ -61,7 +61,7 @@ async function githubRequest(endpoint, token = null) {
         }
         throw new Error(`GitHub API error: ${response.status} ${response.statusText}`);
     }
-    
+
     const data = await response.json();
     _apiCache.set(cacheKey, data);
     return data;
@@ -131,7 +131,7 @@ async function getReadmeContent(owner, repo, token) {
     try {
         const readme = await githubRequest(`/repos/${owner}/${repo}/readme`, token);
         // Robust UTF-8 decoding for Base64 content
-        const binaryString = atob(readme.content);
+        const binaryString = atob(readme.content.replace(/\s/g, ''));
         const bytes = new Uint8Array(binaryString.length);
         for (let i = 0; i < binaryString.length; i++) {
             bytes[i] = binaryString.charCodeAt(i);
@@ -147,26 +147,27 @@ async function getReadmeContent(owner, repo, token) {
 // Fetch contents of all GitHub Actions workflow files (up to 5)
 async function getWorkflowContent(owner, repo, token) {
     try {
-        const contents = await githubRequest(`/repos/${owner}/${repo}/contents/`, token);
+        const results = [];
+        const workflowPath = '.github/workflows';
+        const contents = await githubRequest(`/repos/${owner}/${repo}/contents/${workflowPath}`, token);
         for (const item of contents.slice(0, 5)) {
-            if (item.type === 'file') {
-                const extensions = ['.py', '.js', '.java', '.go', '.rs', '.ts', '.jsx', '.tsx'];
-                if (extensions.some(ext => item.name.endsWith(ext))) {
-                    try {
-                        const file = await githubRequest(`/repos/${owner}/${repo}/contents/${item.path}`, token);
-                        // Decode file content (Base64 -> binary -> UTF-8)
-                        const binaryString = atob(file.content);
-                        const bytes = new Uint8Array(binaryString.length);
-                        for (let i = 0; i < binaryString.length; i++) {
-                            bytes[i] = binaryString.charCodeAt(i);
-                        }
-                        const content = new TextDecoder().decode(bytes);
-                        if (content.includes('#') || content.includes('//') || content.includes('/*')) {
-                            return true;
-                        }
-                    } catch {
-                        continue;
+            if (item.type === 'file' && (item.name.endsWith('.yml') || item.name.endsWith('.yaml'))) {
+                try {
+                    const file = await githubRequest(`/repos/${owner}/${repo}/contents/${item.path}`, token);
+                    // Robust UTF-8 decoding for Base64 content
+                    const binaryString = atob(file.content.replace(/\s/g, ''));
+                    const bytes = new Uint8Array(binaryString.length);
+                    for (let i = 0; i < binaryString.length; i++) {
+                        bytes[i] = binaryString.charCodeAt(i);
                     }
+                    const content = new TextDecoder().decode(bytes);
+                    results.push({
+                        name: item.name,
+                        content: content,
+                        url: file.html_url || `https://github.com/${owner}/${repo}/blob/main/${item.path}`
+                    });
+                } catch {
+                    continue;
                 }
             }
         }
@@ -412,7 +413,7 @@ class ComplianceChecker {
         this.addCheck(category, 'Wiki or docs/ directory', hasWiki || hasDocs, 1,
             `GitHub API <code>has_wiki</code>: <strong>${hasWiki}</strong>; ` +
             (hasDocs ? `<a href="${buildDirUrl(this.owner, this.repo, 'docs')}" target="_blank" rel="noopener">docs/</a> directory found`
-                     : 'docs/ directory: not found'),
+                : 'docs/ directory: not found'),
             'Enable the Wiki feature in repository Settings, or create a "docs/" directory with detailed documentation files.');
 
         // 14. API documentation
@@ -446,7 +447,13 @@ class ComplianceChecker {
             for (const item of sourceFiles.slice(0, 8)) {
                 try {
                     const file = await githubRequest(`/repos/${this.owner}/${this.repo}/contents/${item.path}`, this.token);
-                    const content = atob(file.content.replace(/\s/g, ''));
+                    const binaryString = atob(file.content.replace(/\s/g, ''));
+                    const bytes = new Uint8Array(binaryString.length);
+                    for (let i = 0; i < binaryString.length; i++) {
+                        bytes[i] = binaryString.charCodeAt(i);
+                    }
+                    const content = new TextDecoder().decode(bytes);
+
                     if (content.includes('#') || content.includes('//') || content.includes('/*')) {
                         hasComments = true;
                         commentsFileUrl = file.html_url;
@@ -982,14 +989,14 @@ class ComplianceChecker {
         // Run all code-search-based tests in parallel to reduce latency
         const [edgeResult, mockResult, sanitizeResult, gracefulResult, regressionResult] = await Promise.all([
             hasTests ? searchCodeInRepo(this.owner, this.repo, 'edge_case OR boundary OR invalid_input', this.token)
-                     : Promise.resolve({ total_count: 0, items: [] }),
+                : Promise.resolve({ total_count: 0, items: [] }),
             hasTests ? searchCodeInRepo(this.owner, this.repo, 'mock OR stub OR MagicMock OR sinon', this.token)
-                     : Promise.resolve({ total_count: 0, items: [] }),
+                : Promise.resolve({ total_count: 0, items: [] }),
             hasTests ? searchCodeInRepo(this.owner, this.repo, 'sanitize OR xss OR injection OR sql_injection OR traversal', this.token)
-                     : Promise.resolve({ total_count: 0, items: [] }),
+                : Promise.resolve({ total_count: 0, items: [] }),
             searchCodeInRepo(this.owner, this.repo, 'except Exception OR catch (error) OR catch(err)', this.token),
             hasTests ? searchCodeInRepo(this.owner, this.repo, 'regression OR test_issue OR bug_fix OR repro', this.token)
-                     : Promise.resolve({ total_count: 0, items: [] }),
+                : Promise.resolve({ total_count: 0, items: [] }),
         ]);
 
         // 56. Tests cover edge cases
@@ -1551,7 +1558,7 @@ function displayResults(results) {
             <a href="${results.url}" target="_blank" rel="noopener">${results.url.replace('https://github.com/', '')}</a>
         </span>
     `;
-    
+
     // Update score
     const percentage = results.percentage;
     document.getElementById('scoreValue').textContent = percentage;
@@ -1600,7 +1607,7 @@ function displayResults(results) {
         categoryDiv.className = 'category';
 
         const categoryPercentage = Math.round((categoryData.score / categoryData.maxScore) * 100);
-        
+
         categoryDiv.innerHTML = `
             <button type="button" class="category-header" onclick="toggleCategory(this)" aria-expanded="false">
                 <div class="category-title">${categoryName}</div>
@@ -1627,7 +1634,7 @@ function displayResults(results) {
                 </div>
             </div>
         `;
-        
+
         categoriesDiv.appendChild(categoryDiv);
     }
 
@@ -1658,7 +1665,7 @@ async function checkCompliance() {
 
         // Clear the API cache so results from a previous run do not bleed into this one
         _apiCache.clear();
-        
+
         // Parse URL
         const { owner, repo } = parseGitHubUrl(repoUrl);
 

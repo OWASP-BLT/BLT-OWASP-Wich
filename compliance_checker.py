@@ -352,7 +352,7 @@ class OWASPComplianceChecker:
         no_secrets = self._check_no_secrets(repo)
         self._add_check(category, "No hardcoded credentials or secrets", 
                        no_secrets, 1,
-                       "Basic pattern check performed on root files. Use a dedicated secret scanner for a deep check.",
+                       "Placeholder check only — use a dedicated secret scanner (git-secrets, trufflehog) for thorough analysis.",
                        "Remove any hardcoded passwords, API keys, or secrets from your code. Use environment variables or secure vaults. Scan with tools like git-secrets or truffleHog.")
         
         # 27-30. Security best practices (placeholder - detailed in security section)
