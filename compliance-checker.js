@@ -7,6 +7,19 @@ const GITHUB_API_BASE = 'https://api.github.com';
 
 // Simple in-memory cache to reduce API calls
 const _apiCache = new Map();
+const _utf8Decoder = new TextDecoder('utf-8');
+
+function decodeBase64Utf8(base64Content) {
+    const sanitized = String(base64Content || '').replace(/\s/g, '');
+    const binaryString = atob(sanitized);
+    const bytes = new Uint8Array(binaryString.length);
+
+    for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+    }
+
+    return _utf8Decoder.decode(bytes);
+}
 
 // Parse GitHub URL to extract owner and repo
 function parseGitHubUrl(url) {
@@ -15,12 +28,12 @@ function parseGitHubUrl(url) {
         if (urlObj.hostname !== 'github.com' && urlObj.hostname !== 'www.github.com') {
             throw new Error('Not a GitHub URL');
         }
-        
+
         const pathParts = urlObj.pathname.split('/').filter(p => p);
         if (pathParts.length < 2) {
             throw new Error('Invalid GitHub repository URL');
         }
-        
+
         return {
             owner: pathParts[0],
             repo: pathParts[1]
@@ -40,13 +53,13 @@ async function githubRequest(endpoint, token = null) {
     const headers = {
         'Accept': 'application/vnd.github.v3+json'
     };
-    
+
     if (token) {
         headers['Authorization'] = `token ${token}`;
     }
-    
+
     const response = await fetch(`${GITHUB_API_BASE}${endpoint}`, { headers });
-    
+
     if (!response.ok) {
         if (response.status === 404) {
             throw new Error('Repository not found or is private');
@@ -61,7 +74,7 @@ async function githubRequest(endpoint, token = null) {
         }
         throw new Error(`GitHub API error: ${response.status} ${response.statusText}`);
     }
-    
+
     const data = await response.json();
     _apiCache.set(cacheKey, data);
     return data;
@@ -91,7 +104,7 @@ async function checkFileExistsGetUrl(owner, repo, path, token) {
 async function getFileContentAndUrl(owner, repo, path, token) {
     try {
         const file = await githubRequest(`/repos/${owner}/${repo}/contents/${path}`, token);
-        const content = atob(file.content.replace(/\s/g, ''));
+        const content = decodeBase64Utf8(file.content);
         return { content, url: file.html_url || `https://github.com/${owner}/${repo}/blob/main/${path}` };
     } catch {
         return null;
@@ -130,9 +143,10 @@ async function checkDirectoryExists(owner, repo, path, token) {
 async function getReadmeContent(owner, repo, token) {
     try {
         const readme = await githubRequest(`/repos/${owner}/${repo}/readme`, token);
-        const content = atob(readme.content.replace(/\s/g, '')).toLowerCase();
+        const content = decodeBase64Utf8(readme.content).toLowerCase();
         return content;
-    } catch {
+    } catch (error) {
+        console.error('Error fetching/decoding README:', error);
         return null;
     }
 }
@@ -140,16 +154,25 @@ async function getReadmeContent(owner, repo, token) {
 // Fetch contents of all GitHub Actions workflow files (up to 5)
 async function getWorkflowContent(owner, repo, token) {
     try {
-        const workflows = await githubRequest(`/repos/${owner}/${repo}/contents/.github/workflows`, token);
-        if (!Array.isArray(workflows)) return [];
         const results = [];
-        for (const wf of workflows.slice(0, 5)) {
-            if (wf.type === 'file') {
-                try {
-                    const file = await githubRequest(`/repos/${owner}/${repo}/contents/${wf.path}`, token);
-                    const content = atob(file.content.replace(/\s/g, ''));
-                    results.push({ name: wf.name, content, url: file.html_url });
-                } catch { continue; }
+        const workflowPath = '.github/workflows';
+        const contents = await githubRequest(`/repos/${owner}/${repo}/contents/${workflowPath}`, token);
+        const workflowFiles = contents
+            .filter(item => item.type === 'file' && /\.(yml|yaml)$/i.test(item.name))
+            .slice(0, 5);
+
+        for (const item of workflowFiles) {
+            try {
+                const file = await githubRequest(`/repos/${owner}/${repo}/contents/${item.path}`, token);
+                const content = decodeBase64Utf8(file.content);
+                results.push({
+                    name: item.name,
+                    content: content,
+                    url: file.html_url || `https://github.com/${owner}/${repo}/blob/main/${item.path}`
+                });
+            } catch {
+                console.warn(`Failed to fetch workflow file: ${item.name}`);
+                continue;
             }
         }
         return results;
@@ -160,12 +183,18 @@ async function getWorkflowContent(owner, repo, token) {
 
 // Build a GitHub file URL (fallback when html_url is unavailable)
 function buildFileUrl(owner, repo, path) {
-    return `https://github.com/${owner}/${repo}/blob/main/${path}`;
+    const safeOwner = encodeURIComponent(String(owner || ''));
+    const safeRepo = encodeURIComponent(String(repo || ''));
+    const safePath = String(path || '').split('/').map(segment => encodeURIComponent(segment)).join('/');
+    return `https://github.com/${safeOwner}/${safeRepo}/blob/main/${safePath}`;
 }
 
 // Build a GitHub directory URL
 function buildDirUrl(owner, repo, path) {
-    return `https://github.com/${owner}/${repo}/tree/main/${path}`;
+    const safeOwner = encodeURIComponent(String(owner || ''));
+    const safeRepo = encodeURIComponent(String(repo || ''));
+    const safePath = String(path || '').split('/').map(segment => encodeURIComponent(segment)).join('/');
+    return `https://github.com/${safeOwner}/${safeRepo}/tree/main/${safePath}`;
 }
 
 // Main compliance checker class
@@ -173,6 +202,8 @@ class ComplianceChecker {
     constructor(owner, repo, token = null) {
         this.owner = owner;
         this.repo = repo;
+        this._safeOwner = escapeHtml(owner);
+        this._safeRepo = escapeHtml(repo);
         this.token = token;
         this.results = {
             url: `https://github.com/${owner}/${repo}`,
@@ -283,10 +314,10 @@ class ComplianceChecker {
 
         // 2. Open-source license
         const hasLicense = this.repoData.license !== null;
-        const licenseUrl = `https://github.com/${this.owner}/${this.repo}/blob/main/LICENSE`;
+        const licenseUrl = buildFileUrl(this.owner, this.repo, 'LICENSE');
         this.addCheck(category, 'Open-source license file present', hasLicense, 1,
             hasLicense
-                ? `License: <a href="${licenseUrl}" target="_blank" rel="noopener">${this.repoData.license.name}</a> — detected via GitHub repository metadata`
+                ? `License: <a href="${licenseUrl}" target="_blank" rel="noopener">${escapeHtml(this.repoData.license.name)}</a> — detected via GitHub repository metadata`
                 : 'No license detected in repository metadata (GitHub API: repo.license is null)',
             'Add a LICENSE file to your repository. Popular choices include MIT, Apache 2.0, or GPL. Use GitHub\'s "Add file > Create new file > LICENSE" wizard to add one.');
 
@@ -294,14 +325,14 @@ class ComplianceChecker {
         const readmeResult = await checkFileExistsGetUrl(this.owner, this.repo, 'README.md', this.token);
         this.addCheck(category, 'README file provides project overview', readme !== null, 1,
             readme !== null
-                ? `Found <a href="${readmeResult.url || buildFileUrl(this.owner, this.repo, 'README.md')}" target="_blank" rel="noopener">README.md</a> — checked via GitHub API <code>/repos/${this.owner}/${this.repo}/readme</code>`
+                ? `Found <a href="${readmeResult.url || buildFileUrl(this.owner, this.repo, 'README.md')}" target="_blank" rel="noopener">README.md</a> — checked via GitHub API <code>/repos/${this._safeOwner}/${this._safeRepo}/readme</code>`
                 : 'README not found. Checked GitHub API: GET /repos/{owner}/{repo}/readme returned 404.',
             'Create a README.md file in the root directory with project overview, installation instructions, and usage examples.');
 
         // 4. OWASP organization
         const isOwasp = this.owner.toLowerCase() === 'owasp';
         this.addCheck(category, 'Under OWASP organization', isOwasp, 1,
-            `Checked repository owner via GitHub API: <strong>${this.owner}</strong> (expected: owasp)`,
+            `Checked repository owner via GitHub API: <strong>${this._safeOwner}</strong> (expected: owasp)`,
             'This check verifies if the repository is under the OWASP GitHub organization. Consider contributing to OWASP or following OWASP guidelines even if not under OWASP org.');
 
         // 5. Contributing guidelines
@@ -325,7 +356,7 @@ class ComplianceChecker {
             const commitUrl = hasRecentCommits ? commits[0].html_url : '';
             this.addCheck(category, 'Active maintainers with recent commits', hasRecentCommits, 1,
                 hasRecentCommits
-                    ? `Latest commit: <a href="${commitUrl}" target="_blank" rel="noopener">${latestSha}</a> — checked via GitHub API <code>/repos/${this.owner}/${this.repo}/commits</code>`
+                    ? `Latest commit: <a href="${commitUrl}" target="_blank" rel="noopener">${latestSha}</a> — checked via GitHub API <code>/repos/${this._safeOwner}/${this._safeRepo}/commits</code>`
                     : 'No commits found in repository',
                 'Ensure regular commits to show active maintenance. If the project is complete, add a note about its maintenance status in the README.');
         } catch {
@@ -355,7 +386,7 @@ class ComplianceChecker {
             const collaborators = await githubRequest(`/repos/${this.owner}/${this.repo}/collaborators?per_page=1`, this.token);
             const hasCollaborators = collaborators.length > 0;
             this.addCheck(category, 'Well-governed with active maintainers', hasCollaborators, 1,
-                `GitHub API <code>/repos/${this.owner}/${this.repo}/collaborators</code> returned ${collaborators.length} result(s)`,
+                `GitHub API <code>/repos/${this._safeOwner}/${this._safeRepo}/collaborators</code> returned ${collaborators.length} result(s)`,
                 'Add collaborators to your repository through Settings > Collaborators. Having multiple maintainers ensures better project governance.');
         } catch {
             this.addCheck(category, 'Well-governed with active maintainers', false, 1,
@@ -394,7 +425,7 @@ class ComplianceChecker {
         this.addCheck(category, 'Wiki or docs/ directory', hasWiki || hasDocs, 1,
             `GitHub API <code>has_wiki</code>: <strong>${hasWiki}</strong>; ` +
             (hasDocs ? `<a href="${buildDirUrl(this.owner, this.repo, 'docs')}" target="_blank" rel="noopener">docs/</a> directory found`
-                     : 'docs/ directory: not found'),
+                : 'docs/ directory: not found'),
             'Enable the Wiki feature in repository Settings, or create a "docs/" directory with detailed documentation files.');
 
         // 14. API documentation
@@ -428,11 +459,12 @@ class ComplianceChecker {
             for (const item of sourceFiles.slice(0, 8)) {
                 try {
                     const file = await githubRequest(`/repos/${this.owner}/${this.repo}/contents/${item.path}`, this.token);
-                    const content = atob(file.content.replace(/\s/g, ''));
+                    const content = decodeBase64Utf8(file.content);
+
                     if (content.includes('#') || content.includes('//') || content.includes('/*')) {
                         hasComments = true;
                         commentsFileUrl = file.html_url;
-                        commentsDetails = `Found comments in <a href="${commentsFileUrl}" target="_blank" rel="noopener">${item.name}</a> (searched for: #, //, /*)`;
+                        commentsDetails = `Found comments in <a href="${escapeHtml(commentsFileUrl)}" target="_blank" rel="noopener">${escapeHtml(item.name)}</a> (searched for: #, //, /*)`;
                         break;
                     }
                 } catch { continue; }
@@ -483,7 +515,7 @@ class ComplianceChecker {
             const releaseUrl = hasVersions ? releases[0].html_url : null;
             this.addCheck(category, 'Clear versioning strategy', hasVersions, 1,
                 hasVersions
-                    ? `Found ${releases.length} release(s). Latest: <a href="${releaseUrl}" target="_blank" rel="noopener">${releases[0].tag_name}</a> — checked via GitHub API <code>/repos/${this.owner}/${this.repo}/releases</code>`
+                    ? `Found ${releases.length} release(s). Latest: <a href="${releaseUrl}" target="_blank" rel="noopener">${releases[0].tag_name}</a> — checked via GitHub API <code>/repos/${this._safeOwner}/${this._safeRepo}/releases</code>`
                     : 'No releases found via GitHub API /releases endpoint',
                 'Create GitHub Releases to document version history. Tag each release: `git tag v1.0.0 && git push --tags`, then create a Release in the GitHub UI. Follow Semantic Versioning (semver.org).');
         } catch {
@@ -812,9 +844,9 @@ class ComplianceChecker {
         const depAuditInWf = this._workflowIncludes(['npm audit', 'pip-audit', 'safety check', 'snyk test', 'bundle-audit', 'govulncheck', 'trivy']);
         const hasDepSec = snykResult.exists || depbotResult.exists || depAuditInWf.found;
         let depSecDetails = '';
-        if (snykResult.exists) depSecDetails = `Found <a href="${snykResult.url}" target="_blank" rel="noopener">.snyk</a> configuration`;
+        if (snykResult.exists) depSecDetails = `Found <a href="${escapeHtml(snykResult.url)}" target="_blank" rel="noopener">.snyk</a> configuration`;
         else if (depbotResult.exists) depSecDetails = `Dependabot configured (see check #32)`;
-        else if (depAuditInWf.found) depSecDetails = `Dependency audit command "<strong>${depAuditInWf.kw}</strong>" in <a href="${depAuditInWf.url}" target="_blank" rel="noopener">${depAuditInWf.name}</a>`;
+        else if (depAuditInWf.found) depSecDetails = `Dependency audit command "<strong>${escapeHtml(depAuditInWf.kw)}</strong>" in <a href="${escapeHtml(depAuditInWf.url)}" target="_blank" rel="noopener">${escapeHtml(depAuditInWf.name)}</a>`;
         else depSecDetails = 'No dependency security scanning found (.snyk, dependabot.yml, npm audit, pip-audit, snyk test)';
         this.addCheck(category, 'No outdated/unsafe dependencies', hasDepSec, 1, depSecDetails,
             'Enable dependency scanning: add .github/dependabot.yml, use Snyk (snyk.io), or add `npm audit --audit-level=high` / `pip-audit` to your CI pipeline. Review and update vulnerable dependencies promptly.');
@@ -964,14 +996,14 @@ class ComplianceChecker {
         // Run all code-search-based tests in parallel to reduce latency
         const [edgeResult, mockResult, sanitizeResult, gracefulResult, regressionResult] = await Promise.all([
             hasTests ? searchCodeInRepo(this.owner, this.repo, 'edge_case OR boundary OR invalid_input', this.token)
-                     : Promise.resolve({ total_count: 0, items: [] }),
+                : Promise.resolve({ total_count: 0, items: [] }),
             hasTests ? searchCodeInRepo(this.owner, this.repo, 'mock OR stub OR MagicMock OR sinon', this.token)
-                     : Promise.resolve({ total_count: 0, items: [] }),
+                : Promise.resolve({ total_count: 0, items: [] }),
             hasTests ? searchCodeInRepo(this.owner, this.repo, 'sanitize OR xss OR injection OR sql_injection OR traversal', this.token)
-                     : Promise.resolve({ total_count: 0, items: [] }),
+                : Promise.resolve({ total_count: 0, items: [] }),
             searchCodeInRepo(this.owner, this.repo, 'except Exception OR catch (error) OR catch(err)', this.token),
             hasTests ? searchCodeInRepo(this.owner, this.repo, 'regression OR test_issue OR bug_fix OR repro', this.token)
-                     : Promise.resolve({ total_count: 0, items: [] }),
+                : Promise.resolve({ total_count: 0, items: [] }),
         ]);
 
         // 56. Tests cover edge cases
@@ -981,7 +1013,7 @@ class ComplianceChecker {
             hasEdgeCases = edgeResult.total_count > 0;
             if (hasEdgeCases) {
                 const item = edgeResult.items[0];
-                edgeCaseDetails = `Found edge case test patterns in <a href="${item.html_url}" target="_blank" rel="noopener">${item.name}</a> (searched: edge_case, boundary, invalid_input)`;
+                edgeCaseDetails = `Found edge case test patterns in <a href="${escapeHtml(item.html_url)}" target="_blank" rel="noopener">${escapeHtml(item.name)}</a> (searched: edge_case, boundary, invalid_input)`;
             } else {
                 edgeCaseDetails = `${testDirLink} exists but no edge_case/boundary test patterns found via code search`;
             }
@@ -1008,7 +1040,7 @@ class ComplianceChecker {
         if (hasTests) {
             if (hasMocks) {
                 const item = mockResult.items[0];
-                mocksDetails = `Found mock/stub patterns in <a href="${item.html_url}" target="_blank" rel="noopener">${item.name}</a>`;
+                mocksDetails = `Found mock/stub patterns in <a href="${escapeHtml(item.html_url)}" target="_blank" rel="noopener">${escapeHtml(item.name)}</a>`;
             } else {
                 mocksDetails = `${testDirLink} exists but no mock/stub patterns found (searched: mock, stub, MagicMock, sinon)`;
             }
@@ -1037,7 +1069,7 @@ class ComplianceChecker {
         if (hasTests) {
             if (hasSanitizeTests) {
                 const item = sanitizeResult.items[0];
-                sanitizeDetails = `Found security test patterns in <a href="${item.html_url}" target="_blank" rel="noopener">${item.name}</a>`;
+                sanitizeDetails = `Found security test patterns in <a href="${escapeHtml(item.html_url)}" target="_blank" rel="noopener">${escapeHtml(item.name)}</a>`;
             } else {
                 sanitizeDetails = `${testDirLink} found but no sanitize/xss/injection test patterns detected`;
             }
@@ -1061,7 +1093,7 @@ class ComplianceChecker {
         let gracefulDetails = '';
         if (hasGracefulFailure) {
             const item = gracefulResult.items[0];
-            gracefulDetails = `Found error handling patterns in <a href="${item.html_url}" target="_blank" rel="noopener">${item.name}</a>`;
+            gracefulDetails = `Found error handling patterns in <a href="${escapeHtml(item.html_url)}" target="_blank" rel="noopener">${escapeHtml(item.name)}</a>`;
         } else {
             gracefulDetails = 'No error handling patterns found via code search';
         }
@@ -1092,7 +1124,7 @@ class ComplianceChecker {
         if (hasTests) {
             if (hasRegression) {
                 const item = regressionResult.items[0];
-                regressionDetails = `Found regression test patterns in <a href="${item.html_url}" target="_blank" rel="noopener">${item.name}</a>`;
+                regressionDetails = `Found regression test patterns in <a href="${escapeHtml(item.html_url)}" target="_blank" rel="noopener">${escapeHtml(item.name)}</a>`;
             } else {
                 regressionDetails = `${testDirLink} exists — no explicit regression test patterns found`;
             }
@@ -1507,10 +1539,10 @@ function setLoading(isLoading) {
     const btnText = document.getElementById('btnText');
     const spinner = document.getElementById('btnSpinner');
     const input = document.getElementById('repoUrl');
-    
+
     btn.disabled = isLoading;
     input.disabled = isLoading;
-    
+
     if (isLoading) {
         btnText.classList.add('hidden');
         spinner.classList.remove('hidden');
@@ -1520,34 +1552,57 @@ function setLoading(isLoading) {
     }
 }
 
+function escapeHtml(value) {
+    if (value === null || value === undefined) {
+        return '';
+    }
+
+    return String(value).replace(/[&<>"']/g, char => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+    }[char]));
+}
+
 function displayResults(results) {
     currentResults = results;
-    
+
     // Show results section
     document.getElementById('results').classList.remove('hidden');
-    
+
     // Update repo info
-    document.getElementById('repoInfo').innerHTML = `
-        <span class="inline-flex items-center gap-2">
-            <i class="fa-solid fa-folder-tree" aria-hidden="true"></i>
-            <a href="${results.url}" target="_blank" rel="noopener">${results.url.replace('https://github.com/', '')}</a>
-        </span>
-    `;
-    
+    const repoInfoDiv = document.getElementById('repoInfo');
+    repoInfoDiv.innerHTML = '';
+    const span = document.createElement('span');
+    span.className = 'inline-flex items-center gap-2';
+    const icon = document.createElement('i');
+    icon.className = 'fa-solid fa-folder-tree';
+    icon.setAttribute('aria-hidden', 'true');
+    const link = document.createElement('a');
+    link.href = results.url;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.textContent = results.url.replace('https://github.com/', '');
+    span.appendChild(icon);
+    span.appendChild(link);
+    repoInfoDiv.appendChild(span);
+
     // Update score
     const percentage = results.percentage;
     document.getElementById('scoreValue').textContent = percentage;
-    
+
     // Update score circle
     const circle = document.getElementById('scoreCircle');
     const circumference = 339.292;
     const offset = circumference - (percentage / 100) * circumference;
     circle.style.strokeDashoffset = offset;
-    
+
     // Update score color and status
     let statusText = '';
     let statusColor = '';
-    
+
     if (percentage >= 80) {
         statusText = 'EXCELLENT COMPLIANCE';
         statusColor = '#27ae60';
@@ -1565,27 +1620,28 @@ function displayResults(results) {
         statusColor = '#e74c3c';
         circle.style.stroke = '#e74c3c';
     }
-    
+
     const scoreStatus = document.getElementById('scoreStatus');
     scoreStatus.textContent = statusText;
     scoreStatus.style.color = statusColor;
-    
-    document.getElementById('scorePoints').textContent = 
+
+    document.getElementById('scorePoints').textContent =
         `${results.score} out of ${results.maxScore} points`;
-    
+
     // Display categories
     const categoriesDiv = document.getElementById('categories');
     categoriesDiv.innerHTML = '';
-    
+
     for (const [categoryName, categoryData] of Object.entries(results.categories)) {
         const categoryDiv = document.createElement('div');
         categoryDiv.className = 'category';
-        
+
         const categoryPercentage = Math.round((categoryData.score / categoryData.maxScore) * 100);
-        
+        const safeCategoryName = escapeHtml(categoryName);
+
         categoryDiv.innerHTML = `
             <button type="button" class="category-header" onclick="toggleCategory(this)" aria-expanded="false">
-                <div class="category-title">${categoryName}</div>
+                <div class="category-title">${safeCategoryName}</div>
                 <div class="inline-flex items-center gap-3">
                     <div class="category-score">${categoryData.score}/${categoryData.maxScore} (${categoryPercentage}%)</div>
                     <i class="fa-solid fa-chevron-right category-chevron" aria-hidden="true"></i>
@@ -1593,26 +1649,30 @@ function displayResults(results) {
             </button>
             <div class="category-content">
                 <div class="checks-list">
-                    ${categoryData.checks.map(check => `
+                    ${categoryData.checks.map(check => {
+            const safeName = escapeHtml(check.name);
+
+            return `
                         <div class="check-item">
                             <div class="check-icon ${check.passed ? 'passed' : 'failed'}">
                                 <i class="fa-solid ${check.passed ? 'fa-circle-check' : 'fa-circle-xmark'}" aria-hidden="true"></i>
                             </div>
                             <div class="check-content">
-                                <div class="check-name">${check.name}</div>
+                                <div class="check-name">${safeName}</div>
                                 ${check.details ? `<div class="check-details">${check.details}</div>` : ''}
                                 ${!check.passed && check.howToFix ? `<div class="check-howtofix"><i class="fa-solid fa-circle-info" aria-hidden="true"></i> <strong>How to fix:</strong> ${check.howToFix}</div>` : ''}
                             </div>
                             <div class="check-points">${check.points}/${check.maxPoints} pts</div>
                         </div>
-                    `).join('')}
+                    `;
+        }).join('')}
                 </div>
             </div>
         `;
-        
+
         categoriesDiv.appendChild(categoryDiv);
     }
-    
+
     // Scroll to results
     document.getElementById('results').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
@@ -1626,31 +1686,31 @@ function toggleCategory(header) {
 // Main check compliance function
 async function checkCompliance() {
     hideError();
-    
+
     const repoUrl = document.getElementById('repoUrl').value.trim();
     const token = document.getElementById('githubToken').value.trim() || null;
-    
+
     if (!repoUrl) {
         showError('Please enter a GitHub repository URL');
         return;
     }
-    
+
     try {
         setLoading(true);
 
         // Clear the API cache so results from a previous run do not bleed into this one
         _apiCache.clear();
-        
+
         // Parse URL
         const { owner, repo } = parseGitHubUrl(repoUrl);
-        
+
         // Create checker and run checks
         const checker = new ComplianceChecker(owner, repo, token);
         const results = await checker.runAllChecks();
-        
+
         // Display results
         displayResults(results);
-        
+
     } catch (error) {
         showError(error.message);
         console.error('Compliance check error:', error);

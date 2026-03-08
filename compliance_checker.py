@@ -339,34 +339,34 @@ class OWASPComplianceChecker:
                           "Organize your code into logical modules and directories to improve maintainability.")
         
         # 24. DRY principle (hard to check automatically)
-        self._add_check(category, "Adheres to DRY principle", True, 1,
-                       "Manual code review recommended - automated check not possible",
+        self._add_check(category, "Adheres to DRY principle", False, 1,
+                       "Manual code review recommended - Tool cannot verify design patterns automatically.",
                        "Follow the Don't Repeat Yourself (DRY) principle. Extract common code into reusable functions/modules.")
         
         # 25. Secure coding practices
-        self._add_check(category, "Secure coding practices followed", True, 1,
-                       "Verified by other security checks in this report",
+        self._add_check(category, "Secure coding practices followed", False, 1,
+                       "Heuristic check failed - Requires expert security assessment.",
                        "Follow OWASP secure coding guidelines. Review the Security & OWASP Compliance section for specific recommendations.")
         
         # 26. No hardcoded credentials (basic check)
         no_secrets = self._check_no_secrets(repo)
         self._add_check(category, "No hardcoded credentials or secrets", 
                        no_secrets, 1,
-                       "Basic pattern check performed",
+                       "Placeholder check only — use a dedicated secret scanner (git-secrets, trufflehog) for thorough analysis.",
                        "Remove any hardcoded passwords, API keys, or secrets from your code. Use environment variables or secure vaults. Scan with tools like git-secrets or truffleHog.")
         
         # 27-30. Security best practices (placeholder - detailed in security section)
-        self._add_check(category, "Uses parameterized queries", True, 1,
-                       "Manual verification recommended for SQL databases",
+        self._add_check(category, "Uses parameterized queries", False, 1,
+                       "Manual verification recommended for SQL databases - Tool could not verify interaction patterns.",
                        "If using databases, always use parameterized queries or prepared statements. Never concatenate user input directly into SQL queries.")
-        self._add_check(category, "Strong cryptographic algorithms", True, 1,
-                       "Manual review recommended",
+        self._add_check(category, "Strong cryptographic algorithms", False, 1,
+                       "Manual review recommended for encryption implementation.",
                        "Use modern cryptographic algorithms (e.g., AES-256, SHA-256+). Avoid weak algorithms like MD5 or SHA-1 for security purposes.")
-        self._add_check(category, "Input validation implemented", True, 1,
-                       "Verified by security scanning recommendations",
+        self._add_check(category, "Input validation implemented", False, 1,
+                       "Manual review recommended for application-level validation.",
                        "Validate and sanitize all user inputs. Use allowlists, reject invalid data, and implement proper type checking.")
-        self._add_check(category, "Output encoding for XSS prevention", True, 1,
-                       "Verified by security scanning recommendations",
+        self._add_check(category, "Output encoding for XSS prevention", False, 1,
+                       "Manual review recommended for frontend/template rendering.",
                        "Encode all output to prevent XSS attacks. Use context-appropriate encoding (HTML, JavaScript, URL, CSS).")
     
     def _check_security(self, repo) -> None:
