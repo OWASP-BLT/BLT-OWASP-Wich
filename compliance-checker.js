@@ -162,19 +162,17 @@ async function getWorkflowContent(owner, repo, token) {
             .slice(0, 5);
 
         for (const item of workflowFiles) {
-            {
-                try {
-                    const file = await githubRequest(`/repos/${owner}/${repo}/contents/${item.path}`, token);
-                    const content = decodeBase64Utf8(file.content);
-                    results.push({
-                        name: item.name,
-                        content: content,
-                        url: file.html_url || `https://github.com/${owner}/${repo}/blob/main/${item.path}`
-                    });
-                } catch {
-                    console.warn(`Failed to fetch workflow file: ${item.name}`);
-                    continue;
-                }
+            try {
+                const file = await githubRequest(`/repos/${owner}/${repo}/contents/${item.path}`, token);
+                const content = decodeBase64Utf8(file.content);
+                results.push({
+                    name: item.name,
+                    content: content,
+                    url: file.html_url || `https://github.com/${owner}/${repo}/blob/main/${item.path}`
+                });
+            } catch {
+                console.warn(`Failed to fetch workflow file: ${item.name}`);
+                continue;
             }
         }
         return results;
@@ -185,12 +183,18 @@ async function getWorkflowContent(owner, repo, token) {
 
 // Build a GitHub file URL (fallback when html_url is unavailable)
 function buildFileUrl(owner, repo, path) {
-    return `https://github.com/${owner}/${repo}/blob/main/${path}`;
+    const safeOwner = encodeURIComponent(String(owner || ''));
+    const safeRepo = encodeURIComponent(String(repo || ''));
+    const safePath = String(path || '').split('/').map(segment => encodeURIComponent(segment)).join('/');
+    return `https://github.com/${safeOwner}/${safeRepo}/blob/main/${safePath}`;
 }
 
 // Build a GitHub directory URL
 function buildDirUrl(owner, repo, path) {
-    return `https://github.com/${owner}/${repo}/tree/main/${path}`;
+    const safeOwner = encodeURIComponent(String(owner || ''));
+    const safeRepo = encodeURIComponent(String(repo || ''));
+    const safePath = String(path || '').split('/').map(segment => encodeURIComponent(segment)).join('/');
+    return `https://github.com/${safeOwner}/${safeRepo}/tree/main/${safePath}`;
 }
 
 // Main compliance checker class
@@ -198,6 +202,8 @@ class ComplianceChecker {
     constructor(owner, repo, token = null) {
         this.owner = owner;
         this.repo = repo;
+        this._safeOwner = escapeHtml(owner);
+        this._safeRepo = escapeHtml(repo);
         this.token = token;
         this.results = {
             url: `https://github.com/${owner}/${repo}`,
@@ -308,10 +314,10 @@ class ComplianceChecker {
 
         // 2. Open-source license
         const hasLicense = this.repoData.license !== null;
-        const licenseUrl = `https://github.com/${this.owner}/${this.repo}/blob/main/LICENSE`;
+        const licenseUrl = buildFileUrl(this.owner, this.repo, 'LICENSE');
         this.addCheck(category, 'Open-source license file present', hasLicense, 1,
             hasLicense
-                ? `License: <a href="${licenseUrl}" target="_blank" rel="noopener">${this.repoData.license.name}</a> — detected via GitHub repository metadata`
+                ? `License: <a href="${licenseUrl}" target="_blank" rel="noopener">${escapeHtml(this.repoData.license.name)}</a> — detected via GitHub repository metadata`
                 : 'No license detected in repository metadata (GitHub API: repo.license is null)',
             'Add a LICENSE file to your repository. Popular choices include MIT, Apache 2.0, or GPL. Use GitHub\'s "Add file > Create new file > LICENSE" wizard to add one.');
 
@@ -319,14 +325,14 @@ class ComplianceChecker {
         const readmeResult = await checkFileExistsGetUrl(this.owner, this.repo, 'README.md', this.token);
         this.addCheck(category, 'README file provides project overview', readme !== null, 1,
             readme !== null
-                ? `Found <a href="${readmeResult.url || buildFileUrl(this.owner, this.repo, 'README.md')}" target="_blank" rel="noopener">README.md</a> — checked via GitHub API <code>/repos/${this.owner}/${this.repo}/readme</code>`
+                ? `Found <a href="${readmeResult.url || buildFileUrl(this.owner, this.repo, 'README.md')}" target="_blank" rel="noopener">README.md</a> — checked via GitHub API <code>/repos/${this._safeOwner}/${this._safeRepo}/readme</code>`
                 : 'README not found. Checked GitHub API: GET /repos/{owner}/{repo}/readme returned 404.',
             'Create a README.md file in the root directory with project overview, installation instructions, and usage examples.');
 
         // 4. OWASP organization
         const isOwasp = this.owner.toLowerCase() === 'owasp';
         this.addCheck(category, 'Under OWASP organization', isOwasp, 1,
-            `Checked repository owner via GitHub API: <strong>${this.owner}</strong> (expected: owasp)`,
+            `Checked repository owner via GitHub API: <strong>${this._safeOwner}</strong> (expected: owasp)`,
             'This check verifies if the repository is under the OWASP GitHub organization. Consider contributing to OWASP or following OWASP guidelines even if not under OWASP org.');
 
         // 5. Contributing guidelines
@@ -350,7 +356,7 @@ class ComplianceChecker {
             const commitUrl = hasRecentCommits ? commits[0].html_url : '';
             this.addCheck(category, 'Active maintainers with recent commits', hasRecentCommits, 1,
                 hasRecentCommits
-                    ? `Latest commit: <a href="${commitUrl}" target="_blank" rel="noopener">${latestSha}</a> — checked via GitHub API <code>/repos/${this.owner}/${this.repo}/commits</code>`
+                    ? `Latest commit: <a href="${commitUrl}" target="_blank" rel="noopener">${latestSha}</a> — checked via GitHub API <code>/repos/${this._safeOwner}/${this._safeRepo}/commits</code>`
                     : 'No commits found in repository',
                 'Ensure regular commits to show active maintenance. If the project is complete, add a note about its maintenance status in the README.');
         } catch {
@@ -380,7 +386,7 @@ class ComplianceChecker {
             const collaborators = await githubRequest(`/repos/${this.owner}/${this.repo}/collaborators?per_page=1`, this.token);
             const hasCollaborators = collaborators.length > 0;
             this.addCheck(category, 'Well-governed with active maintainers', hasCollaborators, 1,
-                `GitHub API <code>/repos/${this.owner}/${this.repo}/collaborators</code> returned ${collaborators.length} result(s)`,
+                `GitHub API <code>/repos/${this._safeOwner}/${this._safeRepo}/collaborators</code> returned ${collaborators.length} result(s)`,
                 'Add collaborators to your repository through Settings > Collaborators. Having multiple maintainers ensures better project governance.');
         } catch {
             this.addCheck(category, 'Well-governed with active maintainers', false, 1,
@@ -509,7 +515,7 @@ class ComplianceChecker {
             const releaseUrl = hasVersions ? releases[0].html_url : null;
             this.addCheck(category, 'Clear versioning strategy', hasVersions, 1,
                 hasVersions
-                    ? `Found ${releases.length} release(s). Latest: <a href="${releaseUrl}" target="_blank" rel="noopener">${releases[0].tag_name}</a> — checked via GitHub API <code>/repos/${this.owner}/${this.repo}/releases</code>`
+                    ? `Found ${releases.length} release(s). Latest: <a href="${releaseUrl}" target="_blank" rel="noopener">${releases[0].tag_name}</a> — checked via GitHub API <code>/repos/${this._safeOwner}/${this._safeRepo}/releases</code>`
                     : 'No releases found via GitHub API /releases endpoint',
                 'Create GitHub Releases to document version history. Tag each release: `git tag v1.0.0 && git push --tags`, then create a Release in the GitHub UI. Follow Semantic Versioning (semver.org).');
         } catch {
